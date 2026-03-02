@@ -26,6 +26,7 @@ class AnalyzeResponse(BaseModel):
     metrics: dict[str, float]
     top_models: list[dict[str, Any]]
     preprocessing_summary: dict[str, Any]
+    leakage_warnings: list[str]
     explanation: str
 
 

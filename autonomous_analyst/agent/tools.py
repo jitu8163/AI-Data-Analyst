@@ -139,17 +139,20 @@ def _build_explanation(context: AnalysisContext, detail_level: str) -> str:
             f" Top-2 comparison: {first['model_name']} (score={first['combined_score']:.3f}) vs "
             f"{second['model_name']} (score={second['combined_score']:.3f})."
         )
+    warning_note = ""
+    if result.leakage_warnings:
+        warning_note = " Leakage warnings: " + " ".join(result.leakage_warnings[:3])
 
     if detail_level == "detailed":
         return (
             f"Selected model: {result.model_name}. {metric_line} "
             f"Overfitting risk: {overfit_text} "
-            f"Feature influence: {top_text}.{dropped_note}{prep_note}{compare_note} {improvement}"
+            f"Feature influence: {top_text}.{dropped_note}{prep_note}{compare_note}{warning_note} {improvement}"
         )
 
     return (
         f"{metric_line} Overfitting risk: {overfit_text} "
-        f"Key features: {top_text}.{dropped_note}{prep_note}{compare_note}"
+        f"Key features: {top_text}.{dropped_note}{prep_note}{compare_note}{warning_note}"
     )
 
 
@@ -177,6 +180,7 @@ def build_tools(context: AnalysisContext) -> list[StructuredTool]:
             "top_models": context.training_result.top_models,
             "dropped_features": context.training_result.dropped_features,
             "preprocessing_summary": context.training_result.preprocessing_summary,
+            "leakage_warnings": context.training_result.leakage_warnings,
         }
 
     def explain_model_tool(detail_level: str = "concise") -> dict[str, str]:

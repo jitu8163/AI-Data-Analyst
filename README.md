@@ -43,6 +43,7 @@ autonomous_analyst/
 - Cross-validation and hyperparameter tuning for stronger model selection
 - Top-2 model comparison in API response
 - Preprocessing summary in API response (dropped noisy columns/rows, final training shape)
+- Leakage diagnostics (perfect correlation, MI-dominance, CV=1.0/0.0 warning)
 - Natural-language explanation of model quality and risks
 - Structured JSON response only
 
@@ -147,6 +148,9 @@ If the dataset contains a `target` column, `target_column` is optional.
     "final_training_rows": 1000,
     "final_training_features": 11
   },
+  "leakage_warnings": [
+    "Potential leakage: perfect correlation with target in leaked_feature."
+  ],
   "explanation": "Accuracy=0.870, F1=0.850, indicating moderate predictive quality. Overfitting risk: Tree-based models can overfit on small datasets; validate with cross-validation. Key features: age (0.320), income (0.210), city_NewYork (0.110)."
 }
 ```

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold, cross_val_score, train_test_split
@@ -31,6 +32,7 @@ class TrainResult:
     top_models: list[dict[str, Any]]
     dropped_features: list[str]
     preprocessing_summary: dict[str, Any]
+    leakage_warnings: list[str]
 
 
 def detect_problem_type(target: pd.Series) -> str:
@@ -106,22 +108,24 @@ def _is_index_like(series: pd.Series) -> bool:
 
 
 def _select_feature_columns(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Drop index-like and unnamed artifact columns."""
+    """Drop ID/high-cardinality artifact columns."""
     drop_cols: list[str] = []
+    row_count = max(len(X), 1)
     for col in X.columns:
         lowered = col.strip().lower()
         if lowered.startswith("unnamed"):
             drop_cols.append(col)
             continue
+        if "id" in lowered:
+            drop_cols.append(col)
+            continue
+        unique_ratio = float(X[col].nunique(dropna=True)) / float(row_count)
+        if unique_ratio > 0.95:
+            drop_cols.append(col)
+            continue
         if _is_index_like(X[col]):
             drop_cols.append(col)
             continue
-        if pd.api.types.is_object_dtype(X[col]) or pd.api.types.is_string_dtype(X[col]):
-            non_null = X[col].dropna()
-            if not non_null.empty:
-                unique_ratio = float(non_null.nunique()) / float(len(non_null))
-                if unique_ratio > 0.95:
-                    drop_cols.append(col)
 
     kept = [col for col in X.columns if col not in drop_cols]
     if not kept:
@@ -141,6 +145,86 @@ def _prepare_target(y: pd.Series, problem_type: str) -> tuple[pd.Series, list[in
     y_clean = y.loc[keep_mask].astype(str)
     dropped_idx = y.index[~keep_mask].tolist()
     return y_clean, dropped_idx
+
+
+def _to_numeric_for_mi(series: pd.Series) -> np.ndarray:
+    """Convert series to numeric representation for MI diagnostics."""
+    if pd.api.types.is_numeric_dtype(series):
+        numeric = pd.to_numeric(series, errors="coerce")
+        fill_value = float(numeric.median()) if numeric.notna().any() else 0.0
+        arr = numeric.fillna(fill_value).to_numpy()
+        return np.asarray(arr, dtype=float)
+    codes, _ = pd.factorize(series.astype(str).fillna("__nan__"))
+    return np.asarray(codes, dtype=float)
+
+
+def _target_entropy(y: pd.Series) -> float:
+    probs = y.value_counts(normalize=True, dropna=False).to_numpy(dtype=float)
+    probs = probs[probs > 0]
+    if probs.size == 0:
+        return 0.0
+    return float(-(probs * np.log2(probs)).sum())
+
+
+def _detect_leakage_signals(X: pd.DataFrame, y: pd.Series, problem_type: str) -> list[str]:
+    """Detect likely leakage from perfect dependency patterns."""
+    warnings: list[str] = []
+    if X.empty:
+        return warnings
+
+    y_num = _to_numeric_for_mi(y)
+    numeric_cols = X.select_dtypes(include=["number", "bool"]).columns.tolist()
+
+    perfect_corr_cols: list[str] = []
+    for col in numeric_cols:
+        pair = pd.DataFrame({"x": X[col], "y": y_num}).dropna()
+        if len(pair) < 3:
+            continue
+        corr = pair["x"].corr(pair["y"])
+        if pd.notna(corr) and abs(float(corr)) >= 0.999999:
+            perfect_corr_cols.append(col)
+    if perfect_corr_cols:
+        warnings.append(
+            "Potential leakage: perfect correlation with target in "
+            + ", ".join(perfect_corr_cols[:5])
+            + "."
+        )
+
+    X_mi = pd.DataFrame({col: _to_numeric_for_mi(X[col]) for col in X.columns})
+    try:
+        if problem_type == "classification":
+            y_cls = y.astype(str)
+            mi = mutual_info_classif(X_mi, y_cls, discrete_features="auto", random_state=RANDOM_STATE)
+            entropy = _target_entropy(y_cls)
+            if entropy > 0:
+                suspicious = [
+                    col for col, score in zip(X.columns, mi, strict=False) if float(score) >= (0.98 * entropy)
+                ]
+                if suspicious:
+                    warnings.append(
+                        "Potential leakage: feature mutual information is near maximum target entropy for "
+                        + ", ".join(suspicious[:5])
+                        + "."
+                    )
+        else:
+            mi = mutual_info_regression(X_mi, np.asarray(y_num, dtype=float), random_state=RANDOM_STATE)
+            if len(mi) > 0:
+                mi_max = float(np.max(mi))
+                if mi_max > 0:
+                    suspicious = [
+                        col for col, score in zip(X.columns, mi, strict=False) if float(score) >= (0.98 * mi_max)
+                    ]
+                    if suspicious and len(suspicious) <= 2:
+                        warnings.append(
+                            "Potential leakage: one feature dominates mutual information with target: "
+                            + ", ".join(suspicious[:5])
+                            + "."
+                        )
+    except Exception:
+        # Leakage diagnostics should never block training.
+        pass
+
+    return warnings
 
 
 def _extract_feature_importance(
@@ -190,6 +274,7 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
     y, dropped_target_rows = _prepare_target(y_raw, problem_type=problem_type)
     X_raw = X_raw.loc[y.index]
     X, dropped_features = _select_feature_columns(X_raw)
+    leakage_warnings = _detect_leakage_signals(X, y, problem_type=problem_type)
 
     if problem_type == "classification":
         candidates: dict[str, Any] = {
@@ -360,6 +445,10 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
         reverse=True,
     )
     top_models = ranked[:2]
+    if best_metrics.get("cv_score_mean", 0.0) >= 0.999999 and best_metrics.get("cv_score_std", 1.0) <= 1e-12:
+        leakage_warnings.append(
+            "Potential leakage: cross-validation mean is 1.0 with zero variance (cv_mean=1, cv_std=0)."
+        )
 
     return TrainResult(
         problem_type=problem_type,
@@ -375,4 +464,5 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
             "final_training_rows": int(len(y)),
             "final_training_features": int(X.shape[1]),
         },
+        leakage_warnings=leakage_warnings,
     )
