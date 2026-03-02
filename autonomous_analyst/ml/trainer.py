@@ -11,7 +11,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -27,7 +27,8 @@ class TrainResult:
     model_name: str
     metrics: dict[str, float]
     feature_importance: dict[str, float]
-    model_comparison: dict[str, dict[str, float]]
+    model_comparison: dict[str, dict[str, Any]]
+    top_models: list[dict[str, Any]]
     dropped_features: list[str]
     preprocessing_summary: dict[str, Any]
 
@@ -201,6 +202,16 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
                 min_samples_leaf=2,
             ),
         }
+        tune_grids: dict[str, dict[str, list[Any]]] = {
+            "LogisticRegression": {
+                "model__C": [0.1, 1.0, 10.0],
+            },
+            "RandomForestClassifier": {
+                "model__n_estimators": [250, 400],
+                "model__max_depth": [None, 8, 16],
+                "model__min_samples_leaf": [1, 2, 4],
+            },
+        }
         score_key = "f1_score"
     else:
         candidates = {
@@ -211,6 +222,14 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
                 n_jobs=-1,
                 min_samples_leaf=2,
             ),
+        }
+        tune_grids = {
+            "LinearRegression": {},
+            "RandomForestRegressor": {
+                "model__n_estimators": [250, 400],
+                "model__max_depth": [None, 8, 16],
+                "model__min_samples_leaf": [1, 2, 4],
+            },
         }
         score_key = "r2"
 
@@ -239,7 +258,9 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
     best_pipeline: Pipeline | None = None
     best_metrics: dict[str, float] = {}
     best_score = -np.inf
-    comparison: dict[str, dict[str, float]] = {}
+    comparison: dict[str, dict[str, Any]] = {}
+    best_numeric_features: list[str] = []
+    best_categorical_features: list[str] = []
     cv_splits = 5 if len(y_train) >= 80 else 3
     if problem_type == "classification":
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=RANDOM_STATE)
@@ -260,38 +281,85 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
                 ("model", estimator),
             ]
         )
-        pipeline.fit(X_train, y_train)
-        preds = pipeline.predict(X_test)
+        param_grid = tune_grids.get(model_name, {})
+        best_params: dict[str, Any] = {}
+        cv_mean = float("-inf")
+        cv_std = 0.0
+        fitted_pipeline: Pipeline
+        if param_grid:
+            search = GridSearchCV(
+                estimator=pipeline,
+                param_grid=param_grid,
+                scoring=cv_metric,
+                cv=cv,
+                n_jobs=-1,
+                refit=True,
+            )
+            search.fit(X_train, y_train)
+            fitted_pipeline = search.best_estimator_
+            best_params = dict(search.best_params_)
+            cv_mean = float(search.best_score_)
+            best_idx = int(search.best_index_)
+            cv_std = float(search.cv_results_["std_test_score"][best_idx])
+        else:
+            fitted_pipeline = pipeline
+            fitted_pipeline.fit(X_train, y_train)
+            cv_scores = cross_val_score(
+                fitted_pipeline,
+                X_train,
+                y_train,
+                cv=cv,
+                scoring=cv_metric,
+                n_jobs=-1,
+            )
+            cv_mean = float(np.mean(cv_scores))
+            cv_std = float(np.std(cv_scores))
+
+        preds = fitted_pipeline.predict(X_test)
 
         if problem_type == "classification":
             metrics = evaluate_classification(y_test, preds)
         else:
             metrics = evaluate_regression(y_test, preds)
 
-        cv_scores = cross_val_score(
-            pipeline,
-            X_train,
-            y_train,
-            cv=cv,
-            scoring=cv_metric,
-            n_jobs=-1,
-        )
-        metrics["cv_score_mean"] = float(np.mean(cv_scores))
-        metrics["cv_score_std"] = float(np.std(cv_scores))
-        comparison[model_name] = metrics
+        metrics["cv_score_mean"] = cv_mean
+        metrics["cv_score_std"] = cv_std
         score = (metrics[score_key] * 0.7) + (metrics["cv_score_mean"] * 0.3)
+        comparison[model_name] = {
+            "metrics": metrics,
+            "combined_score": float(score),
+            "best_params": best_params,
+        }
         if score > best_score:
             best_score = score
             best_name = model_name
-            best_pipeline = pipeline
+            best_pipeline = fitted_pipeline
             best_metrics = metrics
+            best_numeric_features = numeric_features
+            best_categorical_features = categorical_features
 
     if best_pipeline is None:
         raise RuntimeError("No model was successfully trained.")
 
     importance = _extract_feature_importance(
-        best_pipeline, numeric_features=numeric_features, categorical_features=categorical_features
+        best_pipeline,
+        numeric_features=best_numeric_features,
+        categorical_features=best_categorical_features,
     )
+    ranked = sorted(
+        (
+            {
+                "model_name": model_name,
+                "combined_score": details["combined_score"],
+                "metrics": details["metrics"],
+                "best_params": details["best_params"],
+            }
+            for model_name, details in comparison.items()
+        ),
+        key=lambda item: item["combined_score"],
+        reverse=True,
+    )
+    top_models = ranked[:2]
 
     return TrainResult(
         problem_type=problem_type,
@@ -299,6 +367,7 @@ def train_best_model(df: pd.DataFrame, target_column: str) -> TrainResult:
         metrics=best_metrics,
         feature_importance=importance,
         model_comparison=comparison,
+        top_models=top_models,
         dropped_features=dropped_features,
         preprocessing_summary={
             "dropped_feature_columns": dropped_features,

@@ -40,7 +40,8 @@ autonomous_analyst/
   - Classification: `LogisticRegression`, `RandomForestClassifier`
   - Regression: `LinearRegression`, `RandomForestRegressor`
 - 80/20 split, baseline training, and evaluation metrics
-- Model comparison (stretch feature) and best-model selection
+- Cross-validation and hyperparameter tuning for stronger model selection
+- Top-2 model comparison in API response
 - Preprocessing summary in API response (dropped noisy columns/rows, final training shape)
 - Natural-language explanation of model quality and risks
 - Structured JSON response only
@@ -108,6 +109,36 @@ If the dataset contains a `target` column, `target_column` is optional.
     "cv_score_mean": 0.84,
     "cv_score_std": 0.03
   },
+  "top_models": [
+    {
+      "model_name": "RandomForestClassifier",
+      "combined_score": 0.85,
+      "metrics": {
+        "accuracy": 0.87,
+        "f1_score": 0.85,
+        "cv_score_mean": 0.84,
+        "cv_score_std": 0.03
+      },
+      "best_params": {
+        "model__max_depth": 16,
+        "model__min_samples_leaf": 2,
+        "model__n_estimators": 400
+      }
+    },
+    {
+      "model_name": "LogisticRegression",
+      "combined_score": 0.80,
+      "metrics": {
+        "accuracy": 0.82,
+        "f1_score": 0.80,
+        "cv_score_mean": 0.79,
+        "cv_score_std": 0.02
+      },
+      "best_params": {
+        "model__C": 1.0
+      }
+    }
+  ],
   "preprocessing_summary": {
     "dropped_feature_columns": [
       "Unnamed: 0"

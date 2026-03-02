@@ -130,15 +130,27 @@ def _build_explanation(context: AnalysisContext, detail_level: str) -> str:
         f", usable rows={prep.get('final_training_rows', 0)}, features={prep.get('final_training_features', 0)}."
     )
     improvement = "Suggested improvements: feature engineering, outlier checks, and cross-validation monitoring."
+    top_models = result.top_models[:2]
+    compare_note = ""
+    if len(top_models) >= 2:
+        first = top_models[0]
+        second = top_models[1]
+        compare_note = (
+            f" Top-2 comparison: {first['model_name']} (score={first['combined_score']:.3f}) vs "
+            f"{second['model_name']} (score={second['combined_score']:.3f})."
+        )
 
     if detail_level == "detailed":
         return (
             f"Selected model: {result.model_name}. {metric_line} "
             f"Overfitting risk: {overfit_text} "
-            f"Feature influence: {top_text}.{dropped_note}{prep_note} {improvement}"
+            f"Feature influence: {top_text}.{dropped_note}{prep_note}{compare_note} {improvement}"
         )
 
-    return f"{metric_line} Overfitting risk: {overfit_text} Key features: {top_text}.{dropped_note}{prep_note}"
+    return (
+        f"{metric_line} Overfitting risk: {overfit_text} "
+        f"Key features: {top_text}.{dropped_note}{prep_note}{compare_note}"
+    )
 
 
 def build_tools(context: AnalysisContext) -> list[StructuredTool]:
@@ -162,6 +174,7 @@ def build_tools(context: AnalysisContext) -> list[StructuredTool]:
             "metrics": context.training_result.metrics,
             "feature_importance": context.training_result.feature_importance,
             "model_comparison": context.training_result.model_comparison,
+            "top_models": context.training_result.top_models,
             "dropped_features": context.training_result.dropped_features,
             "preprocessing_summary": context.training_result.preprocessing_summary,
         }

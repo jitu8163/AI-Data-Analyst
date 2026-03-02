@@ -24,6 +24,7 @@ class AnalyzeResponse(BaseModel):
     problem_type: str
     model_used: str
     metrics: dict[str, float]
+    top_models: list[dict[str, Any]]
     preprocessing_summary: dict[str, Any]
     explanation: str
 

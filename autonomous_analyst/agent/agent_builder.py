@@ -68,6 +68,7 @@ def run_agent_workflow(context: AnalysisContext) -> dict[str, Any]:
         "problem_type": context.training_result.problem_type,
         "model_used": context.training_result.model_name,
         "metrics": context.training_result.metrics,
+        "top_models": context.training_result.top_models,
         "preprocessing_summary": context.training_result.preprocessing_summary,
         "explanation": context.explanation,
     }
