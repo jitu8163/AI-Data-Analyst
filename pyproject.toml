@@ -1,0 +1,20 @@
+[project]
+name = "ai-data-analys"
+version = "0.1.0"
+description = "This a AI Data Analysis Machine Learning Project that determine the complete flow of training machine learning model itself and do it self."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.135.1",
+    "langchain>=1.2.10",
+    "langchain-openai>=1.1.10",
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "openai>=2.24.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "python-multipart>=0.0.22",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "uvicorn[standard]>=0.41.0",
+]
